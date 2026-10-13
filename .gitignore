@@ -1,0 +1,5 @@
+db.php
+.env
+/vendor/
+/node_modules/
+setup_admin.php

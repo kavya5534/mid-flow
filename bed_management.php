@@ -1,0 +1,32 @@
+<?php
+declare(strict_types=1);
+require_once __DIR__ . '/auth.php'; require_login();
+require_once __DIR__ . '/db.php';
+$success=''; $error='';
+if (empty($_SESSION['bed_csrf'])) $_SESSION['bed_csrf']=bin2hex(random_bytes(32));
+if ($_SERVER['REQUEST_METHOD']==='POST') {
+  if (!hash_equals($_SESSION['bed_csrf'], (string)($_POST['csrf']??''))) $error='Form verification failed. Refresh and try again.';
+  else {
+    $action=(string)($_POST['action']??''); $id=filter_var($_POST['bed_id']??null,FILTER_VALIDATE_INT);
+    try {
+      if (!$id) throw new RuntimeException('Invalid bed selected.');
+      if ($action==='assign') {
+        $patient=trim((string)($_POST['patient_name']??''));
+        if ($patient==='') throw new RuntimeException('Enter the patient name or ID.');
+        $stmt=$pdo->prepare("UPDATE beds SET status='Occupied', patient_name=?, updated_at=NOW() WHERE id=? AND status='Available'"); $stmt->execute([$patient,$id]);
+        if (!$stmt->rowCount()) throw new RuntimeException('This bed is no longer available. Refresh the page.');
+        $success='Bed assigned successfully.';
+      } elseif ($action==='release') {
+        $stmt=$pdo->prepare("UPDATE beds SET status='Available', patient_name=NULL, updated_at=NOW() WHERE id=? AND status='Occupied'"); $stmt->execute([$id]);
+        if (!$stmt->rowCount()) throw new RuntimeException('That bed is not currently occupied.');
+        $success='Bed released and marked available.';
+      } else throw new RuntimeException('Unknown action.');
+      $_SESSION['bed_csrf']=bin2hex(random_bytes(32));
+    } catch (Throwable $e) { $error=$e instanceof RuntimeException ? $e->getMessage() : 'Could not update the bed. Check that the beds table exists.'; }
+  }
+}
+$rows=$pdo->query('SELECT id, bed_number, department, bed_type, status, patient_name, updated_at FROM beds ORDER BY department, bed_number')->fetchAll(PDO::FETCH_ASSOC);
+$total=count($rows); $available=0; $occupied=0; $cleaning=0; foreach($rows as $r){if($r['status']==='Available')$available++;elseif($r['status']==='Occupied')$occupied++;else $cleaning++;}
+?>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dynamic Bed Management | MediFlow AI</title><style>*{box-sizing:border-box}body{margin:0;background:#f4f7fb;color:#182338;font:15px Segoe UI,Arial}.top{background:#12263f;color:white;padding:20px 5%;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.top a{color:white;text-decoration:none;margin-left:16px}.wrap{max-width:1200px;margin:30px auto;padding:0 18px}h1{margin:0 0 8px}.muted{color:#728097}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin:24px 0}.stat,.panel{background:white;border:1px solid #e3eaf3;border-radius:14px;padding:20px}.num{font-size:30px;font-weight:800;margin-top:8px}.good{color:#16835c}.warn{color:#b87512}.bad{color:#bd4242}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:14px 12px;border-bottom:1px solid #edf1f6}th{color:#66748a;font-size:12px;text-transform:uppercase}select,input{padding:9px;border:1px solid #d5deea;border-radius:8px;max-width:100%}button{border:0;border-radius:8px;padding:9px 12px;background:#176b87;color:white;font-weight:700;cursor:pointer}.release{background:#65758b}.pill{display:inline-block;padding:5px 9px;border-radius:20px;font-size:12px;font-weight:700;background:#e4f7ee;color:#13764f}.pill.Occupied{background:#ffeded;color:#a52f37}.pill.Cleaning{background:#fff2d9;color:#98610a}.msg{padding:12px;border-radius:9px;margin:12px 0}.ok{background:#e4f7ee;color:#13764f}.err{background:#ffeded;color:#a52f37}.inline{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.empty{padding:24px;color:#718096}@media(max-width:650px){.panel{overflow:auto}th,td{padding:10px 8px}}
+</style></head><body><header class="top"><strong>MediFlow AI · Bed Management</strong><nav><a href="index.php">Dashboard</a><a href="logout.php">Logout</a></nav></header><main class="wrap"><h1>Dynamic Bed Management</h1><p class="muted">Monitor live bed availability and assign or release beds as patient flow changes.</p><?php if($success): ?><div class="msg ok"><?= h($success) ?></div><?php endif; ?><?php if($error): ?><div class="msg err"><?= h($error) ?></div><?php endif; ?><section class="stats"><div class="stat">Total beds<div class="num"><?= $total ?></div></div><div class="stat">Available<div class="num good"><?= $available ?></div></div><div class="stat">Occupied<div class="num bad"><?= $occupied ?></div></div><div class="stat">Cleaning / Other<div class="num warn"><?= $cleaning ?></div></div></section><section class="panel"><h2>Bed inventory</h2><?php if(!$rows): ?><div class="empty">No beds found. Run the SQL setup file to create and seed the beds table.</div><?php else: ?><table><thead><tr><th>Bed</th><th>Department</th><th>Type</th><th>Status</th><th>Patient</th><th>Action</th></tr></thead><tbody><?php foreach($rows as $r): ?><tr><td><strong><?= h($r['bed_number']) ?></strong></td><td><?= h($r['department']) ?></td><td><?= h($r['bed_type']) ?></td><td><span class="pill <?= h($r['status']) ?>"><?= h($r['status']) ?></span></td><td><?= h($r['patient_name']??'—') ?></td><td><?php if($r['status']==='Available'): ?><form class="inline" method="post"><input type="hidden" name="csrf" value="<?= h($_SESSION['bed_csrf']) ?>"><input type="hidden" name="bed_id" value="<?= (int)$r['id'] ?>"><input type="hidden" name="action" value="assign"><input name="patient_name" required placeholder="Patient name / ID" aria-label="Patient name or ID"><button>Assign bed</button></form><?php elseif($r['status']==='Occupied'): ?><form method="post" onsubmit="return confirm('Release this bed?')"><input type="hidden" name="csrf" value="<?= h($_SESSION['bed_csrf']) ?>"><input type="hidden" name="bed_id" value="<?= (int)$r['id'] ?>"><input type="hidden" name="action" value="release"><button class="release">Release bed</button></form><?php else: ?><span class="muted">Not assignable</span><?php endif; ?></td></tr><?php endforeach; ?></tbody></table><?php endif; ?></section></main></body></html>
